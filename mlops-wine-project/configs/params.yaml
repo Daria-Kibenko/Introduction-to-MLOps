@@ -1,0 +1,19 @@
+# configs/params.yaml
+# Central config for all pipeline components.
+# Read by the Airflow DAG and experiment scripts.
+
+data:
+  path: data/wine_quality.csv
+  test_size: 0.2
+
+model:
+  # Best model chosen after experiments (see README for comparison table)
+  type: RandomForestRegressor
+  n_estimators: 100
+  max_depth: 10
+  random_state: 42
+  output_path: models/wine_quality_model.pkl
+
+mlflow:
+  tracking_uri: http://localhost:5000
+  experiment_name: wine-quality
