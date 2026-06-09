@@ -36,13 +36,13 @@ mlflow.set_tracking_uri(params["mlflow"]["tracking_uri"])
 mlflow.set_experiment(params["mlflow"]["experiment_name"])
 
 
-def evaluate(model, X_test, y_test):
+def evaluate(model, X_test, y_test) -> dict:
     """Вычисляет метрики качества модели на тестовой выборке."""
     preds = model.predict(X_test)
     return {
-        "mae":  mean_absolute_error(y_test, preds),
-        "rmse": mean_squared_error(y_test, preds) ** 0.5,
-        "r2":   r2_score(y_test, preds),
+        "mae":  mean_absolute_error(y_test, preds),   # средняя абсолютная ошибка
+        "rmse": mean_squared_error(y_test, preds) ** 0.5,  # корень из MSE
+        "r2":   r2_score(y_test, preds),              # коэффициент детерминации
     }
 
 
@@ -57,7 +57,7 @@ experiments = [
     {
         # RandomForest с небольшой глубиной - меньше переобучения
         "name": "RandomForest_n100_d5",
-        "model": RandomForestRegressor(n_estimators=100, max_depth=5,  random_state=42),
+        "model": RandomForestRegressor(n_estimators=100, max_depth=5, random_state=42),
         "params": {"n_estimators": 100, "max_depth": 5},
     },
     {
@@ -90,7 +90,7 @@ for exp in experiments:
               f"RMSE={metrics['rmse']:.4f}  R²={metrics['r2']:.4f}")
 
 # Итоговая таблица результатов
-print("\n=== Results Summary ===")
+print("\n=== Сводная таблица результатов ===")
 results_df = pd.DataFrame(results).sort_values("r2", ascending=False)
 print(results_df.to_string(index=False))
-print(f"\nBest model: {results_df.iloc[0]['name']}")
+print(f"\nЛучшая модель: {results_df.iloc[0]['name']}")

@@ -2,9 +2,9 @@
 FastAPI-сервис для предсказания качества вина.
 
 Эндпоинты:
-  POST /predict      - предсказать оценку качества вина
-  GET  /healthcheck  - проверка работоспособности сервиса
-  GET  /model-info   - информация о загруженной модели
+  POST /predict      – предсказать оценку качества вина
+  GET  /healthcheck  – проверка работоспособности сервиса
+  GET  /model-info   – информация о загруженной модели
 """
 
 import json
@@ -18,8 +18,11 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 # Конфигурация
-MODEL_PATH = os.getenv("MODEL_PATH", "models/wine_quality_model.pkl")
-METADATA_PATH = "models/metadata.json"
+MODEL_PATH    = os.getenv("MODEL_PATH",    "models/wine_quality_model.pkl")
+METADATA_PATH = os.getenv("METADATA_PATH", "models/metadata.json")
+
+# DVC-указатель модели - именно этот файл есть в репозитории
+MODEL_DVC_FILE = MODEL_PATH + ".dvc"
 
 app = FastAPI(
     title="Wine Quality Prediction API",
@@ -27,72 +30,80 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# Глобальный объект модели
+# Глобальный объект модели (загружается один раз при старте)
 _model = None
 
 
-def _pull_model_from_dvc(path: str) -> None:
-    """Скачивает файл модели из удалённого хранилища DVC, если он отсутствует."""
+def _pull_from_dvc() -> None:
+    """
+    Скачивает модель из удалённого хранилища через DVC.
+    Вызывается только если pkl-файл отсутствует локально.
+    Использует .dvc-файл, который реально есть в репозитории.
+    """
+    if not Path(MODEL_DVC_FILE).exists():
+        raise FileNotFoundError(
+            f"DVC-указатель {MODEL_DVC_FILE} не найден в репозитории. "
+            "Убедитесь, что файл добавлен через `dvc add` и закоммичен."
+        )
+
+    print(f"Скачиваем модель из DVC: {MODEL_DVC_FILE}")
     result = subprocess.run(
-        ["dvc", "pull", path + ".dvc"],
+        ["dvc", "pull", MODEL_DVC_FILE],
         capture_output=True, text=True,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"dvc pull failed: {result.stderr}")
+        raise RuntimeError(f"dvc pull завершился с ошибкой:\n{result.stderr}")
+    print(f"dvc pull выполнен: {result.stdout.strip()}")
 
 
 def get_model():
     """Возвращает загруженную модель; при первом вызове загружает её с диска."""
     global _model
     if _model is None:
-        # Если файла нет локально - тянем из DVC
+        # Если pkl нет локально - тянем через DVC
         if not Path(MODEL_PATH).exists():
-            _pull_model_from_dvc(MODEL_PATH)
+            _pull_from_dvc()
         with open(MODEL_PATH, "rb") as f:
             _model = pickle.load(f)
+        print(f"Модель загружена из {MODEL_PATH}")
     return _model
 
 
 # Схемы данных (Pydantic)
 class WineFeatures(BaseModel):
-    """Физико-химические характеристики вина — входные данные для предсказания."""
-    fixed_acidity: float       = Field(..., gt=0, example=7.4)
-    volatile_acidity: float    = Field(..., gt=0, example=0.70)
-    citric_acid: float         = Field(..., ge=0, example=0.00)
-    residual_sugar: float      = Field(..., gt=0, example=1.9)
-    chlorides: float           = Field(..., gt=0, example=0.076)
-    free_sulfur_dioxide: float = Field(..., gt=0, example=11.0)
-    total_sulfur_dioxide: float= Field(..., gt=0, example=34.0)
-    density: float             = Field(..., gt=0, example=0.9978)
-    pH: float                  = Field(..., gt=0, example=3.51)
-    sulphates: float           = Field(..., gt=0, example=0.56)
-    alcohol: float             = Field(..., gt=0, example=9.4)
+    """Физико-химические характеристики вина - входные данные для предсказания."""
+    fixed_acidity: float        = Field(..., gt=0, example=7.4)    # нелетучая кислотность
+    volatile_acidity: float     = Field(..., gt=0, example=0.70)   # летучая кислотность
+    citric_acid: float          = Field(..., ge=0, example=0.00)   # лимонная кислота
+    residual_sugar: float       = Field(..., gt=0, example=1.9)    # остаточный сахар
+    chlorides: float            = Field(..., gt=0, example=0.076)  # хлориды
+    free_sulfur_dioxide: float  = Field(..., gt=0, example=11.0)   # свободный SO₂
+    total_sulfur_dioxide: float = Field(..., gt=0, example=34.0)   # общий SO₂
+    density: float              = Field(..., gt=0, example=0.9978) # плотность
+    pH: float                   = Field(..., gt=0, example=3.51)   # кислотность pH
+    sulphates: float            = Field(..., gt=0, example=0.56)   # сульфаты
+    alcohol: float              = Field(..., gt=0, example=9.4)    # содержание алкоголя
 
     class Config:
         json_schema_extra = {
             "example": {
-                "fixed_acidity": 7.4,
-                "volatile_acidity": 0.70,
-                "citric_acid": 0.00,
-                "residual_sugar": 1.9,
-                "chlorides": 0.076,
-                "free_sulfur_dioxide": 11.0,
-                "total_sulfur_dioxide": 34.0,
-                "density": 0.9978,
-                "pH": 3.51,
-                "sulphates": 0.56,
-                "alcohol": 9.4,
+                "fixed_acidity": 7.4, "volatile_acidity": 0.70,
+                "citric_acid": 0.00, "residual_sugar": 1.9,
+                "chlorides": 0.076, "free_sulfur_dioxide": 11.0,
+                "total_sulfur_dioxide": 34.0, "density": 0.9978,
+                "pH": 3.51, "sulphates": 0.56, "alcohol": 9.4,
             }
         }
 
 
 class PredictionResponse(BaseModel):
     """Ответ сервиса: числовая оценка и текстовая метка качества."""
-    quality_score: float  # предсказанный балл (0-10)
-    quality_label: str    # словесная оценка: poor / good / excellent
+    quality_score: float   # предсказанный балл (0-10)
+    quality_label: str     # словесная оценка: poor / good / excellent
 
 
-@app.post("/predict", response_model=PredictionResponse, tags=["Prediction"])
+# Эндпоинты
+@app.post("/predict", response_model=PredictionResponse, tags=["Предсказание"])
 def predict(features: WineFeatures) -> PredictionResponse:
     """
     Предсказывает качество вина (0-10) по физико-химическим параметрам.
@@ -107,38 +118,39 @@ def predict(features: WineFeatures) -> PredictionResponse:
 
     # Определяем словесную оценку по пороговым значениям
     if score >= 7:
-        label = "excellent"
+        label = "excellent"   # отличное
     elif score >= 5:
-        label = "good"
+        label = "good"        # хорошее
     else:
-        label = "poor"
+        label = "poor"        # плохое
 
     return PredictionResponse(quality_score=score, quality_label=label)
 
 
-@app.get("/healthcheck", tags=["Monitoring"])
+@app.get("/healthcheck", tags=["Мониторинг"])
 def healthcheck() -> dict:
-    """Проверка работоспособности сервиса - возвращает ok если сервис запущен."""
+    """Проверка работоспособности сервиса."""
     return {"status": "ok"}
 
 
-@app.get("/model-info", tags=["Monitoring"])
+@app.get("/model-info", tags=["Мониторинг"])
 def model_info() -> dict:
     """Возвращает метаданные о текущей загруженной модели."""
     try:
         model = get_model()
 
-        # Читаем метаданные, если файл существует
+        # Читаем метаданные из файла, если он существует
         meta: dict = {}
         if Path(METADATA_PATH).exists():
             with open(METADATA_PATH) as f:
                 meta = json.load(f)
 
         return {
-            "model_type": type(model).__name__,  # тип модели (класс sklearn)
-            "model_path": MODEL_PATH,            # путь к файлу модели
-            "metadata": meta,                    # метаданные из DVC-пайплайна
-            "features": list(WineFeatures.model_fields.keys()),  # список признаков
+            "model_type": type(model).__name__,
+            "model_path": MODEL_PATH,
+            "dvc_pointer": MODEL_DVC_FILE,
+            "metadata": meta,
+            "features": list(WineFeatures.model_fields.keys()),
         }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
@@ -147,9 +159,10 @@ def model_info() -> dict:
 # Событие запуска приложения
 @app.on_event("startup")
 def startup_event():
-    """Предзагружает модель при старте, чтобы первый запрос не тормозил."""
+    """Предзагружает модель при старте (включая dvc pull если нужно)."""
     try:
         get_model()
         print("Модель успешно загружена при запуске сервиса.")
     except Exception as exc:
+        # Логируем предупреждение, но не падаем - healthcheck должен работать
         print(f"Предупреждение: не удалось предзагрузить модель - {exc}")

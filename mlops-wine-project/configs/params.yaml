@@ -7,7 +7,6 @@ data:
   test_size: 0.2
 
 model:
-  # Best model chosen after experiments (see README for comparison table)
   type: RandomForestRegressor
   n_estimators: 100
   max_depth: 10

@@ -1,4 +1,4 @@
-# Проект по качеству вина - MLOps
+# Проект по качеству вина — MLOps
 
 Полноценный MLOps-пайплайн для предсказания качества красного вина по физико-химическим характеристикам.
 
@@ -6,25 +6,31 @@
 
 ```
 .
-├── .gitlab-ci.yml                  # CI/CD пайплайн (линтер → DVC → тесты)
+├── .dvc/
+│   └── config                          # Настройка удалённого DVC-хранилища (MinIO S3)
+├── .gitlab-ci.yml                      # CI/CD: линтер → проверка DVC → тесты
 ├── configs/
-│   └── params.yaml                 # Централизованные гиперпараметры и пути
+│   └── params.yaml                     # Гиперпараметры и пути (читается DAG и экспериментами)
 ├── dags/
-│   └── wine_quality_dag.py         # Airflow DAG: загрузка → обучение → сохранение
-├── data/                           # Отслеживается DVC (в git только .dvc-файлы)
-│   └── wine_quality.csv.dvc
+│   └── wine_quality_dag.py             # Airflow DAG: dvc pull → обучение → метаданные → dvc push
+├── data/
+│   └── wine_quality.csv.dvc            # DVC-указатель на датасет (реальный CSV не в git)
 ├── experiments/
-│   └── train_experiments.py        # Скрипт сравнения моделей
-├── models/                         # Артефакты модели под версионированием DVC
-│   ├── wine_quality_model.pkl.dvc
-│   └── metadata.json
+│   └── train_experiments.py            # Сравнение LinearRegression vs RandomForest
+├── models/
+│   ├── wine_quality_model.pkl.dvc      # DVC-указатель на модель
+│   └── metadata.json.dvc              # DVC-указатель на метаданные обучения
 ├── src/
 │   └── api/
-│       └── main.py                 # FastAPI-сервис
+│       └── main.py                     # FastAPI-сервис (dvc pull при старте если нет pkl)
 ├── tests/
-│   └── test_api.py                 # Независимые тесты API
+│   └── test_api.py                     # Независимые тесты всех эндпоинтов
 └── requirements.txt
 ```
+
+> **Важно:** файлы `data/wine_quality.csv`, `models/wine_quality_model.pkl` и `models/metadata.json`
+> **не хранятся в git**. В репозитории есть только `.dvc`-указатели. Реальные файлы
+> скачиваются командой `dvc pull` из удалённого хранилища MinIO S3.
 
 ## Быстрый старт
 
@@ -44,6 +50,7 @@ pip install -r requirements.txt
 dvc remote modify myremote access_key_id     ВАШ_КЛЮЧ
 dvc remote modify myremote secret_access_key ВАШ_СЕКРЕТ
 
+# Скачиваем все файлы (данные + модель + метаданные)
 dvc pull
 ```
 
@@ -52,6 +59,7 @@ dvc pull
 ```bash
 uvicorn src.api.main:app --reload
 # Swagger UI: http://localhost:8000/docs
+# При старте API автоматически сделает dvc pull если модель не найдена локально
 ```
 
 ### 4. Запустить тесты
@@ -67,7 +75,7 @@ export AIRFLOW_HOME=$(pwd)/.airflow
 airflow db init
 airflow scheduler &
 airflow webserver --port 8080
-# Запуск DAG вручную:
+# Ручной запуск DAG:
 airflow dags trigger wine_quality_training
 ```
 
@@ -77,32 +85,50 @@ airflow dags trigger wine_quality_training
 
 **Датасет:** [Red Wine Quality](https://github.com/aniruddhachoudhury/Red-Wine-Quality/blob/master/winequality-red.csv)
 
-- 1 599 строк, 12 колонок (11 физико-химических признаков + оценка качества 0-10)
+- 1 599 строк, 12 колонок (11 физико-химических признаков + оценка качества 0–10)
 - Версионируется с помощью **DVC** (удалённое хранилище: MinIO S3)
-- В git попадают только `.dvc`-файлы-указатели, сами данные - никогда
+- В git: только `data/wine_quality.csv.dvc` — лёгкий текстовый указатель с md5-хэшем
+- Реальный CSV скачивается через `dvc pull`
+
+---
+
+## Airflow DAG: полный пайплайн
+
+```
+load_data → train_model → save_metadata → dvc_push
+```
+
+| Таска           | Что делает                                                           |
+|-----------------|----------------------------------------------------------------------|
+| `load_data`     | `dvc pull data/wine_quality.csv.dvc`, затем читает CSV               |
+| `train_model`   | Обучает RandomForestRegressor, логирует метрики в MLflow             |
+| `save_metadata` | Сохраняет JSON с версией, параметрами и временем обучения            |
+| `dvc_push`      | `dvc add` модель и метаданные, затем `dvc push` в удалённое хранилище |
+
+**Ошибки DVC** (`dvc pull`, `dvc add`, `dvc push`) поднимают исключение — таска падает явно, пайплайн не продолжается.
 
 ---
 
 ## Эксперименты и выбор модели
 
-Две модели сравнивались на разбивке 80/20 с `random_state=42`.  
+Две модели сравнивались на разбивке 80/20 с `random_state=42`.
 Все эксперименты залогированы в **MLflow** (эксперимент: `wine-quality`).
 
 ### Результаты
 
-| Модель                              | MAE    | RMSE   | R²     |
-|-------------------------------------|--------|--------|--------|
-| LinearRegression (базовая)          | 0.5021 | 0.6481 | 0.3614 |
-| RandomForest n=100 глубина=5        | 0.4312 | 0.5623 | 0.5287 |
-| **RandomForest n=100 глубина=10**   | **0.3897** | **0.5102** | **0.6124** |
-| RandomForest n=200 глубина=10       | 0.3901 | 0.5108 | 0.6118 |
+| Модель                            | MAE    | RMSE   | R²     |
+|-----------------------------------|--------|--------|--------|
+| LinearRegression (базовая)        | 0.5021 | 0.6481 | 0.3614 |
+| RandomForest n=100 глубина=5      | 0.4312 | 0.5623 | 0.5287 |
+| **RandomForest n=100 глубина=10** | **0.3897** | **0.5102** | **0.6124** |
+| RandomForest n=200 глубина=10     | 0.3901 | 0.5108 | 0.6118 |
 
 ### Победитель: `RandomForestRegressor(n_estimators=100, max_depth=10, random_state=42)`
 
 **Почему RandomForest, а не LinearRegression?**
-- R² вырос с 0.36 до 0.61 (+69%), потому что качество вина определяется нелинейными взаимодействиями признаков (например, алкоголь × кислотность).
-- Увеличение числа деревьев со 100 до 200 даёт прирост R² всего +0.1% при удвоении времени обучения - не оправдано.
-- `max_depth=10` предотвращает переобучение, сохраняя при этом способность улавливать главные закономерности.
+- R² вырос с 0.36 до 0.61 (+69%) — качество вина определяется нелинейными взаимодействиями признаков.
+- Увеличение числа деревьев со 100 до 200 даёт прирост R² лишь на 0.1% при удвоении времени обучения.
+- `max_depth=10` предотвращает переобучение, сохраняя способность улавливать ключевые закономерности.
 
 ---
 
@@ -112,7 +138,7 @@ airflow dags trigger wine_quality_training
 |-------|----------------|--------------------------------------------------|
 | POST  | `/predict`     | Предсказать качество вина по 11 признакам        |
 | GET   | `/healthcheck` | Проверка работоспособности → `{"status": "ok"}` |
-| GET   | `/model-info`  | Тип модели, версия, список признаков             |
+| GET   | `/model-info`  | Тип модели, версия, список признаков, .dvc-файл  |
 
 ### Пример запроса
 
@@ -120,17 +146,11 @@ airflow dags trigger wine_quality_training
 curl -X POST http://localhost:8000/predict \
   -H "Content-Type: application/json" \
   -d '{
-    "fixed_acidity": 7.4,
-    "volatile_acidity": 0.70,
-    "citric_acid": 0.00,
-    "residual_sugar": 1.9,
-    "chlorides": 0.076,
-    "free_sulfur_dioxide": 11.0,
-    "total_sulfur_dioxide": 34.0,
-    "density": 0.9978,
-    "pH": 3.51,
-    "sulphates": 0.56,
-    "alcohol": 9.4
+    "fixed_acidity": 7.4, "volatile_acidity": 0.70,
+    "citric_acid": 0.00, "residual_sugar": 1.9,
+    "chlorides": 0.076, "free_sulfur_dioxide": 11.0,
+    "total_sulfur_dioxide": 34.0, "density": 0.9978,
+    "pH": 3.51, "sulphates": 0.56, "alcohol": 9.4
   }'
 # → {"quality_score": 5.62, "quality_label": "good"}
 ```
@@ -145,13 +165,13 @@ curl -X POST http://localhost:8000/predict \
 lint ──► check_dvc ──► test_api
 ```
 
-| Этап        | Что делает                                                         |
-|-------------|--------------------------------------------------------------------|
-| `lint`      | flake8 по `src/`, `dags/`, `tests/` (макс. длина строки 100)      |
-| `check_dvc` | `dvc pull`, затем проверка наличия файлов данных и модели          |
-| `test_api`  | `pytest tests/` с отчётом о покрытии (XML-артефакт)               |
+| Этап        | Что делает                                                                       |
+|-------------|----------------------------------------------------------------------------------|
+| `lint`      | flake8 по `src/`, `dags/`, `tests/` (макс. длина строки 100)                    |
+| `check_dvc` | Проверяет наличие `.dvc/config` и всех `.dvc`-файлов, делает `dvc pull`, проверяет реальные файлы |
+| `test_api`  | `pytest tests/` с отчётом о покрытии кода                                       |
 
-**Секреты** хранятся как переменные GitLab CI/CD и никогда не коммитятся в репозиторий:
+**Секреты** хранятся как переменные GitLab CI/CD (Settings → CI/CD → Variables):
 - `AWS_ACCESS_KEY_ID`
 - `AWS_SECRET_ACCESS_KEY`
 

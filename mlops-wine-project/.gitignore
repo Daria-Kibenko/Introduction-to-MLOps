@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.env
+
+# Реальные данные и модели (отслеживаются DVC, не git)
+# В git попадают только соответствующие .dvc-файлы
+data/wine_quality.csv
+models/wine_quality_model.pkl
+models/metadata.json
+
+# Кэш DVC (локальный)
+.dvc/cache/
+.dvc/tmp/
+
+# MLflow
+mlruns/
+
+# Airflow
+.airflow/
+airflow.cfg
+airflow.db
+logs/
+
+# IDE
+.idea/
+.vscode/
+
+# Coverage
+.coverage
+coverage.xml
+htmlcov/
+
+# OS
+.DS_Store
